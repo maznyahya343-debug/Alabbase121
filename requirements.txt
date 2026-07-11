@@ -1,3 +1,65 @@
+# ================================================================
+# متطلبات بوت النشر التلقائي المتطور - AutoPostBot v2.0
+# ================================================================
+
+# المكتبات الأساسية
 pyrogram>=2.0.0
-pytz
-pyro-listener
+pyro-listener>=0.2.0
+pytz>=2023.3
+python-dateutil>=2.8.2
+
+# معالجة الصور والوسائط
+Pillow>=10.0.0
+qrcode>=7.4.2
+numpy>=1.24.0
+
+# طلبات HTTP
+aiohttp>=3.9.0
+requests>=2.31.0
+
+# معالجة الملفات
+aiofiles>=23.2.0
+
+# تحليل البيانات والإحصائيات
+pandas>=2.1.0
+matplotlib>=3.7.0
+
+# التشفير والأمان
+cryptography>=41.0.0
+
+# معالجة JSON و XML
+xmltodict>=0.13.0
+lxml>=4.9.0
+
+# قاعدة البيانات
+sqlite3  # مدمج مع Python
+
+# الأدوات المساعدة
+psutil>=5.9.0
+colorama>=0.4.6
+tqdm>=4.66.0
+schedule>=1.2.0
+
+# معالجة النصوص
+emoji>=2.8.0
+langdetect>=1.0.9
+textblob>=0.17.1
+
+# التقارير والرسوم البيانية
+reportlab>=4.0.0
+openpyxl>=3.1.0
+
+# البريد الإلكتروني
+yagmail>=0.15.0
+
+# خدمات السحابة
+boto3>=1.28.0  # AWS S3
+google-cloud-storage>=2.10.0  # Google Cloud Storage
+
+# تحليل الأداء
+memory-profiler>=0.61.0
+
+# أدوات التطوير
+black>=23.0.0
+flake8>=6.0.0
+pytest>=7.4.0
