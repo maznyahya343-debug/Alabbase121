@@ -7,24 +7,14 @@ from pyrogram.types import (
     InlineKeyboardButton as Button
 )
 from pyrogram.errors import (
-    ApiIdInvalid,
-    PhoneNumberInvalid,
-    PhoneCodeInvalid,
-    PhoneCodeExpired,
-    SessionPasswordNeeded,
-    PasswordHashInvalid,
     UserNotParticipant,
-    ChatWriteForbidden,
-    PeerIdInvalid,
     FloodWait
 )
-import os
 import asyncio
-from asyncio import create_task, sleep, get_event_loop
 from datetime import datetime, timedelta
 from pytz import timezone
 from typing import Union, List, Dict, Any, Optional
-import json, random, re
+import json, random, os
 
 # =================== إعدادات البوت ===================
 app = Client(
@@ -63,8 +53,11 @@ GREETING_RESPONSES = {
 
 # =================== إدارة التخزين ===================
 def write(file_path: str, data: Any):
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"خطأ في حفظ البيانات: {e}")
 
 def read(file_path: str) -> Any:
     if not os.path.exists(file_path):
@@ -72,8 +65,14 @@ def read(file_path: str) -> Any:
             write(file_path, {})
         else:
             write(file_path, [])
-    with open(file_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return {} if "users" in file_path else []
+    
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"خطأ في قراءة البيانات: {e}")
+        return {} if "users" in file_path else []
 
 # =================== تحميل البيانات ===================
 _timezone = timezone("Asia/Baghdad")
@@ -103,7 +102,7 @@ def get_home_markup(user_id: int) -> Markup:
 
 def get_distribution_markup(user_id: int) -> Markup:
     """إنشاء أزرار طرق التوزيع الزمني"""
-    current = users[str(user_id)].get("distribution_method", "random")
+    current = users.get(str(user_id), {}).get("distribution_method", "random")
     methods = {
         "equal": "📏 متساوي",
         "random": "🎲 عشوائي", 
@@ -155,6 +154,18 @@ def get_greeting_response(text: str) -> Optional[str]:
     
     return None
 
+# =================== الإشتراك الإجباري ===================
+async def subscription(message: Message) -> Union[bool, str]:
+    user_id = message.from_user.id
+    for channel in channels:
+        try:
+            await app.get_chat_member(channel, user_id)
+        except UserNotParticipant:
+            return channel
+        except Exception:
+            continue
+    return True
+
 # =================== معالجة الرسائل الخاصة ===================
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "admin"]))
 async def handle_private_messages(client: Client, message: Message):
@@ -174,6 +185,26 @@ async def handle_private_messages(client: Client, message: Message):
     subscribed = await subscription(message)
     if isinstance(subscribed, str):
         return await message.reply(f"⚠️ عليك الإشتراك بقناة البوت أولاً\n📢 القناة: @{subscribed}\nاشترك ثم ارسل /start")
+    
+    # إنشاء حساب إذا لم يكن موجود
+    if str(user_id) not in users:
+        users[str(user_id)] = {
+            "vip": True if user_id == owner else False,
+            "smart_delay": True,
+            "captions": [],
+            "groups": [],
+            "distribution_method": "random",
+            "delete_after": 0,
+            "waitTime": 60,
+            "auto_reply_enabled": True,
+            "custom_replies": {},
+            "session": None
+        }
+        write(users_db, users)
+    
+    # التحقق من الـ VIP
+    if user_id != owner and not users[str(user_id)].get("vip", False):
+        return
     
     # التحقق من الردود التلقائية للمستخدم
     user_data = users.get(str(user_id), {})
@@ -229,8 +260,7 @@ async def more_services(_: Client, callback: CallbackQuery):
     await callback.message.edit_text(
         "🌟 **خدماتنا المميزة:**\n\n"
         "📱 **واتساب:** للتواصل المباشر مع فريق الدعم\n"
-        "💬 **تيليجرام:** للاستفسارات السريعة\n"
-        "📧 **البريد الإلكتروني:** للتواصل الرسمي\n\n"
+        "💬 **تيليجرام:** للاستفسارات السريعة\n\n"
         "اختر طريقة التواصل المناسبة لك:",
         reply_markup=Markup([
             [Button("📱 واتساب", url="https://wa.me/966575996163")],
@@ -274,6 +304,93 @@ async def toggle_auto_reply(_: Client, callback: CallbackQuery):
     status = "مفعلة ✅" if not current else "معطلة ❌"
     await callback.answer(f"الردود التلقائية {status}", show_alert=True)
     await auto_replies_menu(_, callback)
+
+@app.on_callback_query(filters.regex(r"^(addReply)$"))
+async def add_reply(_: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    await callback.message.delete()
+    
+    try:
+        keyword = await app.wait_for_message(
+            chat_id=user_id,
+            text="🔑 **أرسل الكلمة المفتاحية**\nمثال: مرحبا\n/إلغاء للإلغاء",
+            timeout=60
+        )
+    except asyncio.TimeoutError:
+        return await app.send_message(user_id, "⏰ انتهى الوقت", reply_markup=Markup([[Button("- العوده -", callback_data="autoReplies")]]))
+    
+    if keyword.text == "/إلغاء":
+        return await keyword.reply("✅ تم الإلغاء")
+    
+    try:
+        response = await app.wait_for_message(
+            chat_id=user_id,
+            text="💬 **أرسل الرد المناسب**\n/إلغاء للإلغاء",
+            timeout=60
+        )
+    except asyncio.TimeoutError:
+        return await app.send_message(user_id, "⏰ انتهى الوقت", reply_markup=Markup([[Button("- العوده -", callback_data="autoReplies")]]))
+    
+    if response.text == "/إلغاء":
+        return await response.reply("✅ تم الإلغاء")
+    
+    # حفظ الرد
+    if "custom_replies" not in users[str(user_id)]:
+        users[str(user_id)]["custom_replies"] = {}
+    
+    users[str(user_id)]["custom_replies"][keyword.text.strip()] = response.text
+    write(users_db, users)
+    
+    await response.reply(f"✅ تم إضافة الرد\n🔑 الكلمة: {keyword.text}\n💬 الرد: {response.text[:50]}...",
+                        reply_markup=Markup([[Button("- العوده -", callback_data="autoReplies")]]))
+
+@app.on_callback_query(filters.regex(r"^(viewReplies)$"))
+async def view_replies(_: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    replies = users.get(str(user_id), {}).get("custom_replies", {})
+    
+    if not replies:
+        return await callback.answer("📭 لا توجد ردود مخصصة", show_alert=True)
+    
+    text = "📋 **الردود المخصصة:**\n\n"
+    for keyword, response in replies.items():
+        text += f"🔑 {keyword}\n💬 {response[:50]}...\n\n"
+    
+    await callback.message.edit_text(
+        text[:4000],
+        reply_markup=Markup([[Button("- العوده -", callback_data="autoReplies")]])
+    )
+
+@app.on_callback_query(filters.regex(r"^(deleteReply)$"))
+async def delete_reply(_: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    replies = users.get(str(user_id), {}).get("custom_replies", {})
+    
+    if not replies:
+        return await callback.answer("📭 لا توجد ردود للحذف", show_alert=True)
+    
+    await callback.message.delete()
+    
+    try:
+        keyword = await app.wait_for_message(
+            chat_id=user_id,
+            text=f"🔑 **اختر الكلمة المفتاحية للحذف**\n\nالموجودة: {', '.join(replies.keys())}\n/إلغاء للإلغاء",
+            timeout=60
+        )
+    except asyncio.TimeoutError:
+        return await app.send_message(user_id, "⏰ انتهى الوقت", reply_markup=Markup([[Button("- العوده -", callback_data="autoReplies")]]))
+    
+    if keyword.text == "/إلغاء":
+        return await keyword.reply("✅ تم الإلغاء")
+    
+    if keyword.text in replies:
+        del users[str(user_id)]["custom_replies"][keyword.text]
+        write(users_db, users)
+        await keyword.reply(f"✅ تم حذف الرد للكلمة: {keyword.text}",
+                          reply_markup=Markup([[Button("- العوده -", callback_data="autoReplies")]]))
+    else:
+        await keyword.reply(f"❌ الكلمة '{keyword.text}' غير موجودة",
+                          reply_markup=Markup([[Button("- العوده -", callback_data="autoReplies")]]))
 
 # =================== تخصيص الرسائل ===================
 @app.on_callback_query(filters.regex(r"^(customMessages)$"))
@@ -407,7 +524,7 @@ async def toHome(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(account)$"))
 async def account(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
-    has_session = users[str(user_id)].get("session") is not None
+    has_session = users.get(str(user_id), {}).get("session") is not None
     status = "✅ مسجل" if has_session else "❌ غير مسجل"
     
     caption = f"👤 **الحساب**\n\nالحالة: {status}"
@@ -487,7 +604,7 @@ async def newSuper(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(currentSupers)$"))
 async def currentSupers(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
-    groups = users[str(user_id)].get("groups", [])
+    groups = users.get(str(user_id), {}).get("groups", [])
     
     if not groups:
         return await callback.answer("📭 لا توجد مجموعات", show_alert=True)
@@ -510,7 +627,7 @@ async def delSuper(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
     gid = int(callback.data.split("_")[1])
     
-    groups = users[str(user_id)].get("groups", [])
+    groups = users.get(str(user_id), {}).get("groups", [])
     users[str(user_id)]["groups"] = [g for g in groups if g["id"] != gid]
     write(users_db, users)
     
@@ -521,7 +638,7 @@ async def delSuper(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(manageCaptions)$"))
 async def manageCaptions(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
-    captions = users[str(user_id)].get("captions", [])
+    captions = users.get(str(user_id), {}).get("captions", [])
     
     markup = []
     for idx, cap in enumerate(captions):
@@ -555,7 +672,7 @@ async def addCaption(_: Client, callback: CallbackQuery):
     if ask.text == "/إلغاء":
         return await ask.reply("✅ تم الإلغاء")
     
-    captions = users[str(user_id)].get("captions", [])
+    captions = users.get(str(user_id), {}).get("captions", [])
     captions.append(ask.text)
     users[str(user_id)]["captions"] = captions
     write(users_db, users)
@@ -568,7 +685,7 @@ async def delCaption(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
     idx = int(callback.data.split("_")[1])
     
-    captions = users[str(user_id)].get("captions", [])
+    captions = users.get(str(user_id), {}).get("captions", [])
     if 0 <= idx < len(captions):
         captions.pop(idx)
         users[str(user_id)]["captions"] = captions
@@ -577,11 +694,21 @@ async def delCaption(_: Client, callback: CallbackQuery):
     
     await manageCaptions(_, callback)
 
+@app.on_callback_query(filters.regex(r"^viewCap_"))
+async def viewCaption(_: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    idx = int(callback.data.split("_")[1])
+    
+    captions = users.get(str(user_id), {}).get("captions", [])
+    if 0 <= idx < len(captions):
+        await callback.message.reply(f"**نص الكليشة:**\n{captions[idx]}", 
+                                    reply_markup=Markup([[Button("- العوده -", callback_data="manageCaptions")]]))
+
 # =================== إعدادات النشر ===================
 @app.on_callback_query(filters.regex(r"^(waitTime)$"))
 async def waitTime(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
-    current = users[str(user_id)].get("waitTime", 60)
+    current = users.get(str(user_id), {}).get("waitTime", 60)
     await callback.message.delete()
     
     try:
@@ -610,7 +737,7 @@ async def waitTime(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(deleteTime)$"))
 async def deleteTime(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
-    current = users[str(user_id)].get("delete_after", 0)
+    current = users.get(str(user_id), {}).get("delete_after", 0)
     await callback.message.delete()
     
     try:
@@ -658,7 +785,7 @@ async def setDistribution(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(toggleSmartDelay)$"))
 async def toggleSmartDelay(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
-    current = users[str(user_id)].get("smart_delay", True)
+    current = users.get(str(user_id), {}).get("smart_delay", True)
     users[str(user_id)]["smart_delay"] = not current
     write(users_db, users)
     await callback.answer(f"✅ تم {'تفعيل' if not current else 'تعطيل'} التأخير الذكي", show_alert=True)
@@ -669,16 +796,16 @@ async def toggleSmartDelay(_: Client, callback: CallbackQuery):
 async def startPosting(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
     
-    if not users[str(user_id)].get("session"):
+    if not users.get(str(user_id), {}).get("session"):
         return await callback.answer("❌ يجب تسجيل حساب أولاً", show_alert=True)
     
-    if not users[str(user_id)].get("groups"):
+    if not users.get(str(user_id), {}).get("groups"):
         return await callback.answer("❌ يجب إضافة مجموعات أولاً", show_alert=True)
     
-    if not users[str(user_id)].get("captions"):
+    if not users.get(str(user_id), {}).get("captions"):
         return await callback.answer("❌ يجب إضافة كليشات أولاً", show_alert=True)
     
-    if users[str(user_id)].get("posting"):
+    if users.get(str(user_id), {}).get("posting"):
         return await callback.answer("⚠️ النشر مفعل بالفعل", show_alert=True)
     
     users[str(user_id)]["posting"] = True
@@ -702,7 +829,7 @@ async def startPosting(_: Client, callback: CallbackQuery):
 async def stopPosting(_: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
     
-    if not users[str(user_id)].get("posting"):
+    if not users.get(str(user_id), {}).get("posting"):
         return await callback.answer("⚠️ النشر معطل بالفعل", show_alert=True)
     
     users[str(user_id)]["posting"] = False
@@ -712,15 +839,98 @@ async def stopPosting(_: Client, callback: CallbackQuery):
                                     reply_markup=Markup([[Button("▶️ بدء", callback_data="startPosting"), 
                                                          Button("🏠 الرئيسيه", callback_data="toHome")]]))
 
-# =================== الإشتراك الإجباري ===================
-async def subscription(message: Message) -> Union[bool, str]:
-    user_id = message.from_user.id
-    for channel in channels:
-        try:
-            await app.get_chat_member(channel, user_id)
-        except UserNotParticipant:
-            return channel
-    return True
+# =================== قسم المالك ===================
+async def isOwner(_, __, message: Message) -> bool:
+    return message.from_user.id == owner
+
+owner_filter = filters.create(isOwner)
+
+@app.on_message(filters.command("admin") & filters.private & owner_filter)
+async def adminPanel(_: Client, message: Message):
+    await message.reply("👑 **لوحة تحكم المالك**", reply_markup=Markup([
+        [Button("📊 الاحصائيات", callback_data="statics")],
+        [Button("📢 قنوات الإشتراك", callback_data="channels")],
+        [Button("🛡️ حماية الخصوصية", callback_data="privacyProtection")],
+        [Button("- الرئيسيه -", callback_data="toHome")]
+    ]))
+
+@app.on_callback_query(filters.regex("statics") & owner_filter)
+async def statics(_: Client, callback: CallbackQuery):
+    total = len(users)
+    vip = sum(1 for u in users.values() if u.get("vip", False))
+    posting = sum(1 for u in users.values() if u.get("posting", False))
+    total_groups = sum(len(u.get("groups", [])) for u in users.values())
+    total_captions = sum(len(u.get("captions", [])) for u in users.values())
+    auto_reply_active = sum(1 for u in users.values() if u.get("auto_reply_enabled", True))
+    
+    await callback.message.edit_text(
+        f"📊 **الإحصائيات**\n\n"
+        f"👥 إجمالي المستخدمين: {total}\n"
+        f"⭐ مستخدمي VIP: {vip}\n"
+        f"🚀 النشر مفعل: {posting}\n"
+        f"📢 إجمالي المجموعات: {total_groups}\n"
+        f"📝 إجمالي الكليشات: {total_captions}\n"
+        f"💬 الردود التلقائية مفعلة: {auto_reply_active}",
+        reply_markup=Markup([[Button("- العوده -", callback_data="admin")]])
+    )
+
+@app.on_callback_query(filters.regex("channels") & owner_filter)
+async def channelsControl(_: Client, callback: CallbackQuery):
+    markup = []
+    for ch in channels:
+        markup.append([Button(f"📢 @{ch}", url=f"https://t.me/{ch}"), 
+                      Button("🗑️", callback_data=f"removeChannel_{ch}")])
+    markup.append([Button("➕ إضافة قناة", callback_data="addChannel")])
+    markup.append([Button("- العوده -", callback_data="admin")])
+    
+    await callback.message.edit_text("📢 **قنوات الإشتراك الإجباري**", reply_markup=Markup(markup))
+
+@app.on_callback_query(filters.regex("addChannel") & owner_filter)
+async def addChannel(_: Client, callback: CallbackQuery):
+    await callback.message.delete()
+    
+    try:
+        ask = await app.wait_for_message(
+            chat_id=owner,
+            text="📢 أرسل معرف القناة (بدون @)\nمثال: channelusername\n/إلغاء للإلغاء",
+            timeout=30
+        )
+    except asyncio.TimeoutError:
+        return await app.send_message(owner, "⏰ انتهى الوقت", reply_markup=Markup([[Button("- العوده -", callback_data="channels")]]))
+    
+    if ask.text == "/إلغاء":
+        return await ask.reply("✅ تم الإلغاء")
+    
+    channel = ask.text.strip()
+    channels.append(channel)
+    write(channels_db, channels)
+    
+    await ask.reply(f"✅ تم إضافة قناة @{channel}",
+                   reply_markup=Markup([[Button("- العوده -", callback_data="channels")]]))
+
+@app.on_callback_query(filters.regex("removeChannel_") & owner_filter)
+async def removeChannel(_: Client, callback: CallbackQuery):
+    channel = callback.data.split("_")[1]
+    if channel in channels:
+        channels.remove(channel)
+        write(channels_db, channels)
+        await callback.answer("✅ تم الحذف", show_alert=True)
+    await channelsControl(_, callback)
+
+@app.on_callback_query(filters.regex("privacyProtection") & owner_filter)
+async def privacyProtection(_: Client, callback: CallbackQuery):
+    global privacy_protection_active
+    privacy_protection_active = not privacy_protection_active
+    
+    status = "مفعلة ✅" if privacy_protection_active else "معطلة ❌"
+    await callback.answer(f"حماية الخصوصية {status}", show_alert=True)
+    await callback.message.edit_text(
+        f"🛡️ **حماية سياسة الخصوصية**\n\n"
+        f"الحالة: {status}\n\n"
+        f"عند التفعيل، يقوم البوت بالرد تلقائياً على أسئلة بوتات الخصوصية\n"
+        f"بإجابات عشوائية تحاكي المستخدمين الحقيقيين.",
+        reply_markup=Markup([[Button("- العوده -", callback_data="admin")]])
+    )
 
 # =================== التشغيل الرئيسي ===================
 async def main():
